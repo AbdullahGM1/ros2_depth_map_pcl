@@ -30,12 +30,16 @@ private:
         pcl::PointCloud<pcl::PointXYZ> pcl_cloud;
         pcl::fromROSMsg(*msg, pcl_cloud);
 
-        // Create an empty depth map
-        cv::Mat depth_map = cv::Mat::zeros(height_, width_, CV_8UC1);
+        // Create two empty depth maps
+        cv::Mat depth_map_x = cv::Mat::zeros(height_, width_, CV_8UC1); // For y-z depth (x as depth)
+        cv::Mat depth_map_z = cv::Mat::zeros(height_, width_, CV_8UC1); // For x-y depth (z as depth)
 
-        // Define the center of the depth map 
-        int center_y = width_ / 2;
-        int center_z = height_ / 2;
+        // Define the center of both depth maps
+        int center_y_x = width_ / 2;
+        int center_z_x = height_ / 2;
+        
+        int center_x_z = width_ / 2;
+        int center_y_z = height_ / 2;
 
         // Iterate over the point cloud
         for (const auto& point : pcl_cloud.points)
@@ -44,21 +48,38 @@ private:
             float y = point.y;
             float z = point.z;
 
-            // Convert to pixel coordinates (flip the z-axis to correct the image orientation)
-            int pixel_y = static_cast<int>(center_y + y * scale_);
-            int pixel_z = static_cast<int>(center_z - z * scale_);  // Flip z-axis to correct orientation
+            // ---- First image: (y, z) coordinates with X-based depth map ----
+            int pixel_y_x = static_cast<int>(center_y_x + y * scale_);
+            int pixel_z_x = static_cast<int>(center_z_x - z * scale_);  // Flip z-axis to correct orientation
 
             // Check if the pixel is within image bounds
-            if (pixel_y >= 0 && pixel_y < width_ && pixel_z >= 0 && pixel_z < height_)
+            if (pixel_y_x >= 0 && pixel_y_x < width_ && pixel_z_x >= 0 && pixel_z_x < height_)
             {
-                // Normalize depth value to 0-255
-                int depth_value = std::clamp(static_cast<int>(x * 255 / 100), 0, 255);
-                depth_map.at<uint8_t>(pixel_z, pixel_y) = 255 - depth_value;  // Invert so closer points are brighter
+                // Normalize depth value to 0-255 (depth using x)
+                int depth_value_x = std::clamp(static_cast<int>(x * 255 / 100), 0, 255);
+                depth_map_x.at<uint8_t>(pixel_z_x, pixel_y_x) = 255 - depth_value_x;  // Invert so closer points are brighter
+            }
+
+            // ---- Second image: (x, y) coordinates with Z-based depth map ----
+            int pixel_x_z = static_cast<int>(center_x_z + x * scale_);
+            int pixel_y_z = static_cast<int>(center_y_z + y * scale_);
+
+            // Check if the pixel is within image bounds
+            if (pixel_x_z >= 0 && pixel_x_z < width_ && pixel_y_z >= 0 && pixel_y_z < height_)
+            {
+                // Normalize depth value to 0-255 (depth using z)
+                int depth_value_z = std::clamp(static_cast<int>(z * 255 / 100), 0, 255);
+                depth_map_z.at<uint8_t>(pixel_y_z, pixel_x_z) = 255 - depth_value_z;  // Invert so closer points are brighter
             }
         }
 
-        // Convert the depth map to a ROS Image message
-        sensor_msgs::msg::Image::SharedPtr image_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "mono8", depth_map).toImageMsg();
+        // Combine both depth maps into one image (side-by-side)
+        cv::Mat combined_depth_map(height_, 2 * width_, CV_8UC1);
+        depth_map_x.copyTo(combined_depth_map(cv::Rect(0, 0, width_, height_)));  // Copy depth_map_x to the left
+        depth_map_z.copyTo(combined_depth_map(cv::Rect(width_, 0, width_, height_)));  // Copy depth_map_z to the right
+
+        // Convert the combined depth map to a ROS Image message
+        sensor_msgs::msg::Image::SharedPtr image_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "mono8", combined_depth_map).toImageMsg();
 
         // Publish the depth map
         publisher_->publish(*image_msg);
