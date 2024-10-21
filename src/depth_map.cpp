@@ -4,6 +4,7 @@
 #include "pcl/point_cloud.h"
 #include "pcl_conversions/pcl_conversions.h"
 #include "pcl/point_types.h"
+#include "pcl/filters/passthrough.h"
 #include "cv_bridge/cv_bridge.h"
 #include "opencv2/opencv.hpp"
 
@@ -27,12 +28,28 @@ private:
     void point_cloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
     {
         // Convert ROS PointCloud2 to PCL PointCloud
-        pcl::PointCloud<pcl::PointXYZ> pcl_cloud;
-        pcl::fromROSMsg(*msg, pcl_cloud);
+        pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl::fromROSMsg(*msg, *pcl_cloud);
 
         // Create two empty depth maps
         cv::Mat depth_map_x = cv::Mat::zeros(height_, width_, CV_8UC1); // For y-z depth (x as depth)
         cv::Mat depth_map_z = cv::Mat::zeros(height_, width_, CV_8UC1); // For x-y depth (z as depth)
+
+        // Apply filtering to remove far-away points for x-based depth
+        pcl::PointCloud<pcl::PointXYZ>::Ptr filtered_cloud_x(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl::PassThrough<pcl::PointXYZ> pass_x;
+        pass_x.setInputCloud(pcl_cloud);
+        pass_x.setFilterFieldName("x");  // Set filter for the x-axis
+        pass_x.setFilterLimits(0.3, 5.0);  // Filter points with x in the range [0, 50] meters
+        pass_x.filter(*filtered_cloud_x);  // Apply filter
+
+        // Apply filtering to remove far-away points for z-based depth
+        pcl::PointCloud<pcl::PointXYZ>::Ptr filtered_cloud_z(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl::PassThrough<pcl::PointXYZ> pass_z;
+        pass_z.setInputCloud(pcl_cloud);
+        pass_z.setFilterFieldName("z");  // Set filter for the z-axis
+        pass_z.setFilterLimits(0.3, 20.0);  // Filter points with z in the range [0, 50] meters
+        pass_z.filter(*filtered_cloud_z);  // Apply filter
 
         // Define the center of both depth maps
         int center_y_x = width_ / 2;
@@ -41,14 +58,13 @@ private:
         int center_x_z = width_ / 2;
         int center_y_z = height_ / 2;
 
-        // Iterate over the point cloud
-        for (const auto& point : pcl_cloud.points)
+        // ---- First image: (y, z) coordinates with X-based depth map ----
+        for (const auto& point : filtered_cloud_x->points)
         {
             float x = point.x;
             float y = point.y;
             float z = point.z;
 
-            // ---- First image: (y, z) coordinates with X-based depth map ----
             int pixel_y_x = static_cast<int>(center_y_x + y * scale_);
             int pixel_z_x = static_cast<int>(center_z_x - z * scale_);  // Flip z-axis to correct orientation
 
@@ -56,11 +72,18 @@ private:
             if (pixel_y_x >= 0 && pixel_y_x < width_ && pixel_z_x >= 0 && pixel_z_x < height_)
             {
                 // Normalize depth value to 0-255 (depth using x)
-                int depth_value_x = std::clamp(static_cast<int>(x * 255 / 100), 0, 255);
+                int depth_value_x = std::clamp(static_cast<int>(x * 255 / 50), 0, 255);  // Assuming max x depth is 50
                 depth_map_x.at<uint8_t>(pixel_z_x, pixel_y_x) = 255 - depth_value_x;  // Invert so closer points are brighter
             }
+        }
 
-            // ---- Second image: (x, y) coordinates with Z-based depth map ----
+        // ---- Second image: (x, y) coordinates with Z-based depth map ----
+        for (const auto& point : filtered_cloud_z->points)
+        {
+            float x = point.x;
+            float y = point.y;
+            float z = point.z;
+
             int pixel_x_z = static_cast<int>(center_x_z + x * scale_);
             int pixel_y_z = static_cast<int>(center_y_z + y * scale_);
 
@@ -68,7 +91,7 @@ private:
             if (pixel_x_z >= 0 && pixel_x_z < width_ && pixel_y_z >= 0 && pixel_y_z < height_)
             {
                 // Normalize depth value to 0-255 (depth using z)
-                int depth_value_z = std::clamp(static_cast<int>(z * 255 / 100), 0, 255);
+                int depth_value_z = std::clamp(static_cast<int>(z * 255 / 50), 0, 255);  // Assuming max z depth is 50
                 depth_map_z.at<uint8_t>(pixel_y_z, pixel_x_z) = 255 - depth_value_z;  // Invert so closer points are brighter
             }
         }
